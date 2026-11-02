@@ -6,6 +6,8 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
 from langchain_google_genai import ChatGoogleGenerativeAI
 
+from memory import get_all_memories
+
 
 # Extract clean text from Gemini response
 def get_response_text(response):
@@ -40,6 +42,7 @@ if not api_key:
     raise ValueError(
         "GOOGLE_API_KEY not found. Check your .env file."
     )
+
 
 # Check Chroma database
 if not os.path.isdir("chroma_db"):
@@ -86,6 +89,15 @@ llm = ChatGoogleGenerativeAI(
 chat_history = []
 
 
+# Display saved memories
+print("\nPreviously Saved Memories:")
+
+user_memories = get_all_memories()
+
+for key, value in user_memories:
+    print(f"{key}: {value}")
+
+
 print("\n" + "=" * 45)
 print("       PDF RAG CHATBOT READY!")
 print("=" * 45)
@@ -94,30 +106,32 @@ print("Type 'exit' to stop.")
 
 
 # 6. Chat loop
-while True:
+try:
 
-    question = input("\nYou: ").strip()
+    while True:
 
-    if question.lower() in ["exit", "quit"]:
-        break
+        question = input("\nYou: ").strip()
 
-    if not question:
-        continue
+        if question.lower() in ["exit", "quit"]:
+            break
 
-    try:
+        if not question:
+            continue
 
-        # 7. Understand follow-up questions
-        if chat_history:
+        try:
 
-            history_text = ""
+            # 7. Understand follow-up questions
+            if chat_history:
 
-            for chat in chat_history[-4:]:
-                history_text += (
-                    f"User: {chat['question']}\n"
-                    f"AI: {chat['answer']}\n"
-                )
+                history_text = ""
 
-            search_prompt = f"""
+                for chat in chat_history[-4:]:
+                    history_text += (
+                        f"User: {chat['question']}\n"
+                        f"AI: {chat['answer']}\n"
+                    )
+
+                search_prompt = f"""
 Convert the latest question into a standalone search query
 using the conversation history.
 
@@ -133,53 +147,73 @@ Latest question:
 Search query:
 """
 
-            search_response = llm.invoke(search_prompt)
+                search_response = llm.invoke(search_prompt)
 
-            search_query = get_response_text(
-                search_response
-            )
+                search_query = get_response_text(
+                    search_response
+                )
 
-            if not search_query:
+                if not search_query:
+                    search_query = question
+
+            else:
                 search_query = question
 
-        else:
-            search_query = question
 
+            # 8. Retrieve relevant PDF chunks
+            docs = retriever.invoke(search_query)
 
-        # 8. Retrieve relevant PDF chunks
-        docs = retriever.invoke(search_query)
-
-        if not docs:
-            print("\nAI: No relevant information found in the PDF.")
-            continue
-
-        context = "\n\n".join(
-            doc.page_content for doc in docs
-        )
-
-
-        # 9. Prepare conversation history
-        history = ""
-
-        for chat in chat_history[-4:]:
-            history += (
-                f"User: {chat['question']}\n"
-                f"AI: {chat['answer']}\n"
+            context = "\n\n".join(
+                doc.page_content for doc in docs
             )
 
+            if not context:
+                context = "No relevant PDF information retrieved."
 
-        # 10. Create final prompt
-        prompt = f"""
+
+            # 9. Load permanent user memory
+            memories = get_all_memories()
+
+            memory_context = "\n".join(
+                f"{key}: {value}"
+                for key, value in memories
+            )
+
+            if not memory_context:
+                memory_context = "No personal information saved yet."
+
+
+            # 10. Prepare conversation history
+            history = ""
+
+            for chat in chat_history[-4:]:
+                history += (
+                    f"User: {chat['question']}\n"
+                    f"AI: {chat['answer']}\n"
+                )
+
+            if not history:
+                history = "No previous conversation."
+
+
+            # 11. Create final prompt
+            prompt = f"""
 You are a helpful PDF-based AI assistant.
 
 Instructions:
-1. Answer using the provided PDF context.
-2. Use conversation history to understand follow-up questions.
-3. Do not invent facts.
-4. If the answer is not available in the PDF,
-   clearly say that it was not found in the document.
-5. Give clear, well-structured and concise answers.
-6. You may use bullet points when helpful.
+
+1. Use permanent user memory to answer personal questions.
+2. Use PDF context to answer questions about the PDF.
+3. Use conversation history to understand follow-up questions.
+4. Never invent personal information or PDF facts.
+5. If personal information is available in memory,
+   use it instead of searching the PDF.
+6. If information is unavailable in both memory and PDF,
+   clearly say that it was not found.
+7. Give clear and concise answers.
+
+Permanent User Memory:
+{memory_context}
 
 Conversation History:
 {history}
@@ -194,30 +228,34 @@ Answer:
 """
 
 
-        # 11. Generate answer
-        response = llm.invoke(prompt)
+            # 12. Generate answer
+            response = llm.invoke(prompt)
 
-        answer = get_response_text(response)
+            answer = get_response_text(response)
 
-        if not answer:
-            answer = "I could not generate a response. Please try again."
-
-
-        # 12. Display clean answer
-        print("\nAI:", answer)
+            if not answer:
+                answer = "I could not generate a response. Please try again."
 
 
-        # 13. Store conversation
-        chat_history.append({
-            "question": question,
-            "answer": answer
-        })
+            # 13. Display answer
+            print("\nAI:", answer)
 
 
-    except Exception as e:
+            # 14. Store conversation
+            chat_history.append({
+                "question": question,
+                "answer": answer
+            })
 
-        print("\nSomething went wrong:", str(e))
-        print("Please check your API connection and try again.")
+
+        except Exception as e:
+
+            print("\nSomething went wrong:", str(e))
+            print("Please check your API connection and try again.")
+
+
+except (KeyboardInterrupt, EOFError):
+    print("\nChat stopped by user.")
 
 
 print("\nChat ended! Thank you.")
